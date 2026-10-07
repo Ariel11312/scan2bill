@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "MeterScan",
+    "slug": "meterscan",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.example.meterscan",
+      "infoPlist": {
+        "NSCameraUsageDescription": "MeterScan uses the camera to read your electric meter."
+      }
+    },
+    "android": {
+      "package": "com.example.meterscan",
+      "permissions": [
+        "CAMERA"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "MeterScan uses the camera to read your electric meter."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25"
+          }
+        }
+      ],
+      "expo-asset"
+    ]
+  }
+}
