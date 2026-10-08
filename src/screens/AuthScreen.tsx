@@ -91,7 +91,7 @@ export default function AuthScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       className="flex-1 bg-paper justify-center px-6"
     >
-      <Text className="text-4xl font-bold text-ink">MeterScan</Text>
+      <Text className="text-4xl font-bold text-ink">Scan2Bill</Text>
       <Text className="text-muted mt-2 mb-8">Point your camera at the meter. Get your usage and estimated bill.</Text>
 
       <ErrorBanner message={error} />

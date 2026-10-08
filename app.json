@@ -1,27 +1,28 @@
 {
   "expo": {
-    "name": "MeterScan",
+    "owner": "ariel082s-team",
+    "name": "Scan2Bill",
     "slug": "meterscan",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
       "bundleIdentifier": "com.example.meterscan",
       "infoPlist": {
-        "NSCameraUsageDescription": "MeterScan uses the camera to read your electric meter."
+        "NSCameraUsageDescription": "Scan2Bill uses the camera to read your electric meter."
       }
     },
-    "android": {
-      "package": "com.example.meterscan",
-      "permissions": [
-        "CAMERA"
-      ]
-    },
+"android": {
+  "package": "com.ariel082.scan2bill",
+  "permissions": [
+    "android.permission.CAMERA"
+  ]
+},
     "plugins": [
       [
         "expo-camera",
         {
-          "cameraPermission": "MeterScan uses the camera to read your electric meter."
+          "cameraPermission": "Scan2Bill uses the camera to read your electric meter."
         }
       ],
       [
@@ -33,6 +34,11 @@
         }
       ],
       "expo-asset"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "219b9589-5e69-4d78-910a-25c3153c0657"
+      }
+    }
   }
 }
