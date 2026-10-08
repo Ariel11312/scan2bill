@@ -3,7 +3,8 @@
     "owner": "ariel082s-team",
     "name": "Scan2Bill",
     "slug": "meterscan",
-    "version": "1.0.1",
+    "scheme": "scan2bill",
+    "version": "1.0.4",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
@@ -14,6 +15,7 @@
     },
     "android": {
       "package": "com.ariel082.scan2bill",
+      "versionCode": 1,
       "permissions": [
         "android.permission.CAMERA"
       ]
@@ -25,7 +27,18 @@
           "cameraPermission": "Scan2Bill uses the camera to read your electric meter."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "ndkVersion": "27.1.12297006",
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "36.0.0"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
