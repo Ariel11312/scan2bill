@@ -7,30 +7,22 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
-      "bundleIdentifier": "com.example.meterscan",
+      "bundleIdentifier": "com.ariel082.scan2bill",
       "infoPlist": {
         "NSCameraUsageDescription": "Scan2Bill uses the camera to read your electric meter."
       }
     },
-"android": {
-  "package": "com.ariel082.scan2bill",
-  "permissions": [
-    "android.permission.CAMERA"
-  ]
-},
+    "android": {
+      "package": "com.ariel082.scan2bill",
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
     "plugins": [
       [
         "expo-camera",
         {
           "cameraPermission": "Scan2Bill uses the camera to read your electric meter."
-        }
-      ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "kotlinVersion": "1.9.25"
-          }
         }
       ],
       "expo-asset"
