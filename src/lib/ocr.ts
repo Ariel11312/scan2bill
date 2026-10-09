@@ -12,10 +12,15 @@ import * as ImageManipulator from 'expo-image-manipulator';
 // ---------------------------------------------------------------------------
 const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
 
-// Optional: force a model by name in .env (EXPO_PUBLIC_GEMINI_MODEL=...).
-// Otherwise the app asks your key which models exist and picks a Flash one,
+// Optional: force model(s) by name in .env (EXPO_PUBLIC_GEMINI_MODEL=...).
+// You can give several, comma separated, in the order to try:
+//   EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash,gemini-2.5-flash-lite
+// Otherwise the app asks your key which models exist and picks Flash ones,
 // so a retired model name can't cause a 404.
-const FORCED_MODEL = process.env.EXPO_PUBLIC_GEMINI_MODEL ?? '';
+const FORCED_MODELS = (process.env.EXPO_PUBLIC_GEMINI_MODEL ?? '')
+  .split(',')
+  .map((s:any) => s.trim())
+  .filter(Boolean);
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 // ---------------------------------------------------------------------------
@@ -35,9 +40,17 @@ let cachedModels: string[] = [];
 // Models whose DAILY free quota is used up. Skipped for the rest of the session
 // so we stop wasting requests (and waiting) on them.
 const exhaustedModels = new Set<string>();
+// Models that are overloaded (503) or too slow (timeout) right now. Skipped
+// until the timestamp passes, so we don't hammer or wait on them again.
+const coolOff = new Map<string, number>();
+// Models that rejected the "thinkingConfig" field. We stop sending it to them.
+const noThinkingConfig = new Set<string>();
+
+const COOL_OFF_BUSY_MS = 60_000;
+const COOL_OFF_RATE_MS = 30_000;
 
 async function resolveModels(): Promise<string[]> {
-  if (FORCED_MODEL) return [FORCED_MODEL];
+  if (FORCED_MODELS.length) return FORCED_MODELS;
   if (cachedModels.length) return cachedModels;
 
   const res = await fetch(`${API_BASE}/models?pageSize=200`, {
@@ -72,9 +85,9 @@ async function resolveModels(): Promise<string[]> {
   main.sort((a, b) => score(b) - score(a));
   lite.sort((a, b) => score(b) - score(a));
 
-  // Top 3 regular Flash models, then one Lite model as a last resort. Different
-  // models are overloaded at different times, so more fallbacks help a lot.
-  cachedModels = [...main.slice(0, 3), ...lite.slice(0, 1)];
+  // Top 3 regular Flash models, then up to 2 Lite models as a last resort.
+  // Different models are overloaded at different times, so more fallbacks help.
+  cachedModels = [...main.slice(0, 3), ...lite.slice(0, 2)];
   console.log('Gemini models to try, in order:', cachedModels.join(', '));
   return cachedModels;
 }
@@ -119,7 +132,9 @@ function frameToPhotoCrop(
 
 const MIN_DIGITS = 3;
 const MAX_DIGITS = 8;
-const TIMEOUT_MS = 20000;
+const TIMEOUT_MS = 20000; // digital: small image, short prompt
+const ANALOG_TIMEOUT_MS = 35000; // analog: bigger image, longer prompt
+const TIER_DEADLINE_MS = 90000; // stop starting new tries in one tier after this
 const TARGET_WIDTH = 900;
 
 export type ScanOutcome =
@@ -154,8 +169,8 @@ Respond as JSON: {"integer": "<digits>", "decimals": "<digits>", "code": "<digit
 // How precision is achieved:
 //  1. The model only REPORTS what it sees per dial (direction, last digit the
 //     tip passed, how far toward the next digit). It never forms the number.
-//  2. The app asks 3 times and combines the answers (circular median), so one
-//     bad guess cannot change the result.
+//  2. The app asks up to 3 times and combines the answers (circular median), so
+//     one bad guess cannot change the result.
 //  3. The app turns pointer positions into digits itself, using the carry rule
 //     (each dial must agree with the dial to its right), cascading right-to-left.
 //  4. Sanity checks (alternating dial directions, "next" digit matches, samples
@@ -186,7 +201,11 @@ Respond as JSON only, in this shape:
 
 const ANALOG_MIN_DIGITS = 4;
 const ANALOG_MAX_DIGITS = 6;
-const ANALOG_TARGET_WIDTH = 1400; // dials need more detail than the LCD
+// Dials need more detail than the LCD, but a huge image makes every call slow
+// and is a main cause of timeouts. 1000 px wide is a good balance.
+// Raise toward 1400 only if dial reading accuracy drops.
+const ANALOG_TARGET_WIDTH = 1000;
+const ANALOG_JPEG_QUALITY = 0.85;
 // Adaptive sampling: scan once; only scan again (up to this many times) when
 // the first read looks unsure. A clean read costs just 1 API request.
 const ANALOG_MAX_SAMPLES = 3;
@@ -324,13 +343,21 @@ function mostCommon<T>(items: T[], key: (t: T) => string): T[] {
 // ---------------------------------------------------------------------------
 // Gemini call with retry + model fallback
 // ---------------------------------------------------------------------------
-type GeminiCall = { ok: true; text: string } | { ok: false; error: string };
+type GeminiCall =
+  | { ok: true; text: string; lowAccuracy?: boolean }
+  | { ok: false; error: string };
+
+/** Which models a call may use. */
+type Tier = 'full' | 'lite' | 'all';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function callGeminiOnly(
   prompt: string,
   base64: string,
   temperature: number,
-  allowLite = true
+  tier: Tier,
+  timeoutMs: number
 ): Promise<GeminiCall> {
   if (!API_KEY) {
     return { ok: false, error: 'Missing EXPO_PUBLIC_GEMINI_API_KEY. Add it to .env and restart.' };
@@ -341,44 +368,65 @@ async function callGeminiOnly(
   } catch (e: any) {
     return { ok: false, error: `Scan error: ${e?.message ?? String(e)}` };
   }
-  // Skip models with no daily quota left. Lite models are weak at reading
-  // dials (they often return nothing), so analog scans do not use them.
-  const usable = models.filter(
-    (m) => !exhaustedModels.has(m) && (allowLite || !/lite/i.test(m))
-  );
-  if (!usable.length) {
+
+  // Keep only the models of the requested tier. (Lite models are weak at
+  // reading dials, so analog tries full models first and lite only afterwards.)
+  const ofTier = models.filter((m) => {
+    const isLite = /lite/i.test(m);
+    return tier === 'all' || (tier === 'lite' ? isLite : !isLite);
+  });
+  if (!ofTier.length) {
+    return { ok: false, error: 'No usable model found. Set EXPO_PUBLIC_GEMINI_MODEL in .env.' };
+  }
+
+  // Skip models with no daily quota left.
+  const withQuota = ofTier.filter((m) => !exhaustedModels.has(m));
+  if (!withQuota.length) {
     return {
       ok: false,
       error:
         'Free daily Gemini quota is used up for all models. It resets within about a day. Try again later, or use a key with billing enabled.',
     };
   }
-  models = usable;
 
-  const body = JSON.stringify({
-    contents: [
-      {
-        parts: [
-          { text: prompt },
-          { inline_data: { mime_type: 'image/jpeg', data: base64 } },
-        ],
+  // Skip models that are busy / slow right now. If that would leave none,
+  // try them anyway (the spike may be over).
+  const now = Date.now();
+  const rested = withQuota.filter((m) => (coolOff.get(m) ?? 0) <= now);
+  models = rested.length ? rested : withQuota;
+
+  const makeBody = (model: string) =>
+    JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: 'image/jpeg', data: base64 } },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature,
+        responseMimeType: 'application/json',
+        // Reading a photo does not need long "thinking". Turning it off is the
+        // biggest speed-up and avoids most timeouts.
+        ...(noThinkingConfig.has(model) ? {} : { thinkingConfig: { thinkingBudget: 0 } }),
       },
-    ],
-    generationConfig: { temperature, responseMimeType: 'application/json' },
-  });
+    });
 
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const RETRIES_PER_MODEL = 3; // attempts per model
-  const DEADLINE_MS = 60000; // stop retrying after this long overall
+  const RETRIES_PER_MODEL = 2; // 503 gets one quick retry, then we move on
   const startedAt = Date.now();
   let res: Response | null = null;
-  let lastStatus = 0;
+  let sawBusy = false;
+  let sawQuota = false;
+  let saw404 = false;
+  let sawTimeout = false;
 
   outer: for (const model of models) {
     for (let attempt = 1; attempt <= RETRIES_PER_MODEL; attempt++) {
-      if (Date.now() - startedAt > DEADLINE_MS) break outer;
+      if (Date.now() - startedAt > TIER_DEADLINE_MS) break outer;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const r = await fetch(`${API_BASE}/models/${model}:generateContent`, {
           method: 'POST',
@@ -387,9 +435,8 @@ async function callGeminiOnly(
             'Content-Type': 'application/json',
             'x-goog-api-key': API_KEY,
           },
-          body,
+          body: makeBody(model),
         });
-        lastStatus = r.status;
 
         if (r.ok) {
           console.log(`Gemini OK with ${model}`);
@@ -401,6 +448,13 @@ async function callGeminiOnly(
         console.log(`Gemini ${r.status} on ${model} (try ${attempt}):`, errBody);
 
         if (r.status === 400 || r.status === 403) {
+          // This model does not accept thinkingConfig: remember and retry
+          // the same model without it. This is NOT a bad-key error.
+          if (r.status === 400 && /thinking/i.test(errBody) && !noThinkingConfig.has(model)) {
+            noThinkingConfig.add(model);
+            attempt--; // free retry, does not count
+            continue;
+          }
           if (/expired/i.test(errBody)) {
             return {
               ok: false,
@@ -417,20 +471,36 @@ async function callGeminiOnly(
           return { ok: false, error: 'API key or request rejected. Check your key.' };
         }
         if (r.status === 404) {
+          saw404 = true;
           cachedModels = [];
           break; // try next model
         }
         if (r.status === 429) {
           // Quota/rate limit: another model may have its own quota.
           // A per-DAY limit will not clear by retrying, so remember it.
+          sawQuota = true;
           if (/PerDay/i.test(errBody)) exhaustedModels.add(model);
+          else coolOff.set(model, Date.now() + COOL_OFF_RATE_MS);
           break;
         }
-        // 500 / 503 / 504: overloaded, wait and retry.
-        if (attempt < RETRIES_PER_MODEL) await sleep(2000 * attempt);
+        // 500 / 503 / 504: this model is overloaded.
+        sawBusy = true;
+        if (attempt < RETRIES_PER_MODEL) {
+          await sleep(1500);
+          continue;
+        }
+        coolOff.set(model, Date.now() + COOL_OFF_BUSY_MS);
+        break; // next model
       } catch (e: any) {
-        lastStatus = 0;
-        console.log(`Gemini network/timeout on ${model} (try ${attempt}):`, e?.name);
+        if (e?.name === 'AbortError') {
+          // Too slow: retrying the same slow model rarely helps. Move on.
+          console.log(`Gemini timeout on ${model} after ${timeoutMs} ms`);
+          sawTimeout = true;
+          coolOff.set(model, Date.now() + COOL_OFF_BUSY_MS);
+          break;
+        }
+        console.log(`Gemini network error on ${model} (try ${attempt}):`, e?.name, e?.message);
+        if (attempt < RETRIES_PER_MODEL) await sleep(1000);
       } finally {
         clearTimeout(timer);
       }
@@ -438,22 +508,25 @@ async function callGeminiOnly(
   }
 
   if (!res) {
-    if (lastStatus === 503 || lastStatus === 500 || lastStatus === 504) {
+    if (sawBusy) {
       return {
         ok: false,
         error: 'Gemini is busy right now. Wait a few seconds and tap retry.',
       };
     }
-    if (lastStatus === 429) {
+    if (sawQuota) {
       return { ok: false, error: 'Free quota reached. Wait a minute and retry.' };
     }
-    if (lastStatus === 404) {
+    if (saw404) {
       return {
         ok: false,
         error: 'No usable model found. Set EXPO_PUBLIC_GEMINI_MODEL in .env.',
       };
     }
-    return { ok: false, error: 'Timed out. Check your connection and retry.' };
+    if (sawTimeout) {
+      return { ok: false, error: 'Timed out. Check your connection and retry.' };
+    }
+    return { ok: false, error: 'Could not reach Gemini. Check your connection and retry.' };
   }
 
   const data = await res.json();
@@ -473,7 +546,8 @@ function extractJson(text: string): string {
 async function callOpenAICompat(
   prompt: string,
   base64: string,
-  temperature: number
+  temperature: number,
+  timeoutMs: number
 ): Promise<GeminiCall> {
   if (!ALT_ENABLED) return { ok: false, error: 'No backup provider configured.' };
 
@@ -497,7 +571,7 @@ async function callOpenAICompat(
   let lastStatus = 0;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const r = await fetch(`${ALT_BASE}/chat/completions`, {
         method: 'POST',
@@ -519,7 +593,7 @@ async function callOpenAICompat(
         continue;
       }
       if (r.status === 401 || r.status === 403 || r.status === 404 || r.status === 429) break;
-      await new Promise((res) => setTimeout(res, 1500 * attempt));
+      await sleep(1500 * attempt);
     } catch (e: any) {
       lastStatus = 0;
       console.log('Backup network/timeout:', e?.name);
@@ -536,17 +610,43 @@ async function callOpenAICompat(
   };
 }
 
-/** Gemini first; if it fails for any reason, the backup provider (if set). */
+/**
+ * Tries, in order:
+ *   digital: any Gemini Flash model -> backup provider
+ *   analog:  full Flash models -> Lite models (flagged low accuracy) -> backup
+ * A busy or slow model is skipped quickly, so the next option starts soon.
+ */
 async function callGemini(
   prompt: string,
   base64: string,
   temperature: number,
-  allowLite = true
+  analog: boolean
 ): Promise<GeminiCall> {
-  const g = await callGeminiOnly(prompt, base64, temperature, allowLite);
-  if (g.ok || !ALT_ENABLED) return g;
-  console.log('Gemini failed, trying backup provider:', g.error);
-  const a = await callOpenAICompat(prompt, base64, temperature);
+  const timeoutMs = analog ? ANALOG_TIMEOUT_MS : TIMEOUT_MS;
+  let g: GeminiCall = { ok: false, error: 'Missing EXPO_PUBLIC_GEMINI_API_KEY. Add it to .env and restart.' };
+
+  if (API_KEY) {
+    if (analog) {
+      g = await callGeminiOnly(prompt, base64, temperature, 'full', timeoutMs);
+      if (g.ok) return g;
+      console.log('Full Gemini models failed:', g.error);
+      // Fatal key problems will not be fixed by another model.
+      if (/(API key|key has expired|key is not valid)/i.test(g.error)) {
+        if (!ALT_ENABLED) return g;
+      } else {
+        const lite = await callGeminiOnly(prompt, base64, temperature, 'lite', timeoutMs);
+        if (lite.ok) return { ...lite, lowAccuracy: true };
+        console.log('Lite Gemini models failed:', lite.error);
+      }
+    } else {
+      g = await callGeminiOnly(prompt, base64, temperature, 'all', timeoutMs);
+      if (g.ok) return g;
+    }
+  }
+
+  if (!ALT_ENABLED) return g;
+  console.log('Gemini failed, trying backup provider:', g.ok ? '' : g.error);
+  const a = await callOpenAICompat(prompt, base64, temperature, timeoutMs);
   if (a.ok) return a;
   return API_KEY ? g : a;
 }
@@ -697,7 +797,7 @@ export async function readMeter(
     if (cw > targetW) actions.push({ resize: { width: targetW } });
 
     const crop = await ImageManipulator.manipulateAsync(base.uri, actions, {
-      compress: mode === 'analog' ? 0.95 : 0.9,
+      compress: mode === 'analog' ? ANALOG_JPEG_QUALITY : 0.9,
       format: ImageManipulator.SaveFormat.JPEG,
       base64: true,
     });
@@ -723,24 +823,18 @@ export async function readMeter(
       let usedLite = false;
 
       for (let i = 0; i < ANALOG_MAX_SAMPLES; i++) {
-        let r = await callGemini(
+        // callGemini handles the whole chain: full Flash -> Lite -> backup.
+        const r = await callGemini(
           ANALOG_PROMPT,
           crop.base64,
           ANALOG_TEMPERATURES[i] ?? 0.3,
-          usedLite // full Flash models first; lite only as a last resort
+          true
         );
-        if (!r.ok && !usedLite && /quota/i.test(r.error)) {
-          // Full models are out of quota: try lite models rather than nothing.
-          const lite = await callGemini(ANALOG_PROMPT, crop.base64, ANALOG_TEMPERATURES[i] ?? 0.3, true);
-          if (lite.ok) {
-            usedLite = true;
-            r = lite;
-          }
-        }
         if (!r.ok) {
           lastError = r.error;
-          break; // quota / network problem: more tries would not help
+          break; // every option failed: more tries would not help
         }
+        if (r.lowAccuracy) usedLite = true;
         texts.push(r.text);
         console.log(`GEMINI RAW (analog ${i + 1}):`, r.text);
 
@@ -753,7 +847,7 @@ export async function readMeter(
         if (usedLite && outcome.ok) {
           return {
             ...outcome,
-            warn: 'Read with a lower-accuracy model because the main quota is used up. Check every dial against the meter.',
+            warn: 'Read with a lower-accuracy model because the main models were busy or out of quota. Check every dial against the meter.',
           };
         }
         return outcome;
@@ -762,7 +856,7 @@ export async function readMeter(
     }
 
     // 3b) Digital: one read.
-    const call = await callGemini(PROMPT, crop.base64, 0);
+    const call = await callGemini(PROMPT, crop.base64, 0, false);
     if (!call.ok) return { ok: false, error: call.error };
     const text = call.text;
     console.log('GEMINI RAW:', text);

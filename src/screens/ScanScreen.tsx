@@ -1,9 +1,12 @@
 import React, { useRef, useState } from 'react';
-import { ActivityIndicator, Image, LayoutChangeEvent, Text, View } from 'react-native';
+import { ActivityIndicator, Image, LayoutChangeEvent, Pressable, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { Button, ErrorBanner } from '../components/ui';
-// Save readMeterVision.ts as src/lib/readMeterVision.ts (or change this path).
+import { Screen } from '../components/Background';
+import { Txt } from '../components/Dark';
+import { C } from '../lib/theme';
 import { CROPS, MeterMode, readMeter } from '../lib/ocr';
 
 type Captured = {
@@ -11,6 +14,8 @@ type Captured = {
   width: number;
   height: number;
 };
+
+const SHADE = 'rgba(0,0,0,0.58)';
 
 export default function ScanScreen() {
   const nav = useNavigation<any>();
@@ -21,10 +26,7 @@ export default function ScanScreen() {
   const [error, setError] = useState<string | null>(null);
 
   // Size of the screen area, needed to map the on-screen frame onto the photo.
-  const [viewSize, setViewSize] = useState<{ viewW: number; viewH: number }>({
-    viewW: 0,
-    viewH: 0,
-  });
+  const [viewSize, setViewSize] = useState<{ viewW: number; viewH: number }>({ viewW: 0, viewH: 0 });
 
   // Frozen photo once captured; null means live camera.
   const [captured, setCaptured] = useState<Captured | null>(null);
@@ -43,17 +45,36 @@ export default function ScanScreen() {
     setViewSize({ viewW: width, viewH: height });
   }
 
-  if (!perm) return <View className="flex-1 bg-ink" />;
+  if (!perm) return <View style={{ flex: 1, backgroundColor: C.base }} />;
   if (!perm.granted) {
     return (
-      <View className="flex-1 bg-paper justify-center px-6">
-        <Text className="text-xl font-bold text-ink mb-2">Camera access needed</Text>
-        <Text className="text-muted mb-6">
-          MeterScan reads your meter from a photo. The cropped meter display is sent
-          to an AI service to read the digits.
-        </Text>
-        <Button label="Allow camera" onPress={() => requestPerm()} />
-      </View>
+      <Screen>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 }}>
+          <View
+            style={{
+              width: 64,
+              height: 64,
+              borderRadius: 20,
+              backgroundColor: C.panel,
+              borderWidth: 1,
+              borderColor: C.line,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 20,
+            }}
+          >
+            <Ionicons name="camera-outline" size={30} color={C.volt} />
+          </View>
+          <Txt className="text-2xl font-extrabold text-center mb-2">Camera access needed</Txt>
+          <Txt tone="muted" className="text-center mb-8 leading-6">
+            Scan2Bill reads your meter from a photo. The cropped meter display is sent to an AI
+            service to read the digits.
+          </Txt>
+          <View style={{ alignSelf: 'stretch' }}>
+            <Button label="Allow camera" onPress={() => requestPerm()} />
+          </View>
+        </View>
+      </Screen>
     );
   }
 
@@ -104,24 +125,17 @@ export default function ScanScreen() {
       return;
     }
 
-    // Freeze the image immediately so the user sees the shot.
-    const shot: Captured = {
-      uri: photo.uri,
-      width: photo.width ?? 0,
-      height: photo.height ?? 0,
-    };
+    const shot: Captured = { uri: photo.uri, width: photo.width ?? 0, height: photo.height ?? 0 };
     setCaptured(shot);
 
     // Step 2: read the kWh from the frozen image.
     await runRead(shot);
   }
 
-  // Retry the read on the SAME photo (e.g. after "Gemini is busy").
   function readAgain() {
     if (captured && !busy) runRead(captured);
   }
 
-  // Retake: drop the frozen image and go back to live camera.
   function retake() {
     setCaptured(null);
     setReading(null);
@@ -130,27 +144,54 @@ export default function ScanScreen() {
     setError(null);
   }
 
-  // Accept: hand off to Confirm screen.
   function accept() {
     if (reading == null) return;
     nav.replace('Confirm', { value: reading, raw: rawText });
   }
 
-  // Frame geometry (fractions of the screen). Right side = whatever is left.
   const rightFrac = Math.max(0, 1 - CROP.x - CROP.w);
   const bottomFrac = Math.max(0, 1 - CROP.y - CROP.h);
-
   const needsRetry = !!captured && !busy && reading == null;
 
+  // Dim overlay with a clear window; reused for live + frozen.
+  const frame = (borderColor: string, caption: string, small?: boolean) => (
+    <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+      <View style={{ height: `${CROP.y * 100}%`, backgroundColor: SHADE }} />
+      <View style={{ height: `${CROP.h * 100}%`, flexDirection: 'row' }}>
+        <View style={{ width: `${CROP.x * 100}%`, backgroundColor: SHADE }} />
+        <View
+          style={{
+            flex: 1,
+            borderWidth: 2,
+            borderColor,
+            borderRadius: 14,
+            shadowColor: borderColor,
+            shadowOpacity: 0.6,
+            shadowRadius: 12,
+            shadowOffset: { width: 0, height: 0 },
+          }}
+        />
+        <View style={{ width: `${rightFrac * 100}%`, backgroundColor: SHADE }} />
+      </View>
+      <View
+        style={{
+          height: `${bottomFrac * 100}%`,
+          backgroundColor: SHADE,
+          alignItems: 'center',
+          paddingTop: 16,
+          paddingHorizontal: 32,
+        }}
+      >
+        <Txt className={small ? 'text-center text-sm' : 'text-center'}>{caption}</Txt>
+      </View>
+    </View>
+  );
+
   return (
-    <View className="flex-1 bg-black" onLayout={onLayout}>
+    <View style={{ flex: 1, backgroundColor: '#000' }} onLayout={onLayout}>
       {/* --- Live camera OR frozen image --- */}
       {captured ? (
-        <Image
-          source={{ uri: captured.uri }}
-          style={{ flex: 1 }}
-          resizeMode="cover"
-        />
+        <Image source={{ uri: captured.uri }} style={{ flex: 1 }} resizeMode="cover" />
       ) : (
         <CameraView
           ref={cam}
@@ -164,87 +205,88 @@ export default function ScanScreen() {
 
       {/* --- Meter type toggle (live camera only) --- */}
       {!captured && (
-        <View className="absolute top-14 left-0 right-0 items-center">
-          <View className="flex-row bg-black/60 rounded-full p-1">
-            {(['digital', 'analog'] as MeterMode[]).map((m) => (
-              <Text
-                key={m}
-                onPress={() => setMode(m)}
-                className={
-                  'px-5 py-2 rounded-full text-sm font-semibold ' +
-                  (mode === m ? 'bg-emerald-500 text-white' : 'text-white/70')
-                }
-              >
-                {m === 'digital' ? 'Digital' : 'Analog'}
-              </Text>
-            ))}
+        <View style={{ position: 'absolute', top: 56, left: 0, right: 0, alignItems: 'center' }}>
+          <View
+            style={{
+              flexDirection: 'row',
+              backgroundColor: 'rgba(11,13,16,0.75)',
+              borderRadius: 999,
+              padding: 4,
+              borderWidth: 1,
+              borderColor: C.line,
+            }}
+          >
+            {(['digital', 'analog'] as MeterMode[]).map((m) => {
+              const active = mode === m;
+              return (
+                <Pressable
+                  key={m}
+                  onPress={() => setMode(m)}
+                  style={{
+                    paddingHorizontal: 22,
+                    paddingVertical: 8,
+                    borderRadius: 999,
+                    backgroundColor: active ? C.volt : 'transparent',
+                  }}
+                >
+                  <Txt
+                    className="text-sm font-semibold"
+                    style={{ color: active ? C.onVolt : 'rgba(255,255,255,0.7)' }}
+                  >
+                    {m === 'digital' ? 'Digital' : 'Analog'}
+                  </Txt>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
       )}
 
-      {/* --- Alignment frame (live camera) --- */}
-      {!captured && (
-        <View pointerEvents="none" className="absolute inset-0">
-          <View style={{ height: `${CROP.y * 100}%` }} className="bg-black/55" />
-          <View style={{ height: `${CROP.h * 100}%` }} className="flex-row">
-            <View style={{ width: `${CROP.x * 100}%` }} className="bg-black/55" />
-            <View className="flex-1 border-2 border-white rounded-lg" />
-            <View style={{ width: `${rightFrac * 100}%` }} className="bg-black/55" />
-          </View>
-          <View
-            style={{ height: `${bottomFrac * 100}%` }}
-            className="bg-black/55 items-center pt-4 px-8"
-          >
-            <Text className="text-white text-center">
-              {mode === 'digital'
-                ? 'Fit the meter display (digits and "kWh") inside the frame. Avoid glare and hold steady.'
-                : 'Get close so the row of dials fills the frame (not the whole meter). Avoid glare on the glass and hold steady.'}
-            </Text>
-          </View>
-        </View>
-      )}
-
-      {/* --- Frozen-preview overlay: same frame on the captured photo --- */}
-      {captured && (
-        <View pointerEvents="none" className="absolute inset-0">
-          <View style={{ height: `${CROP.y * 100}%` }} className="bg-black/60" />
-          <View style={{ height: `${CROP.h * 100}%` }} className="flex-row">
-            <View style={{ width: `${CROP.x * 100}%` }} className="bg-black/60" />
-            <View className="flex-1 border-2 border-emerald-400 rounded-lg" />
-            <View style={{ width: `${rightFrac * 100}%` }} className="bg-black/60" />
-          </View>
-          <View
-            style={{ height: `${bottomFrac * 100}%` }}
-            className="bg-black/60 items-center pt-4 px-8"
-          >
-            <Text className="text-white text-center text-sm">
-              Captured photo. Reading the meter inside the box.
-            </Text>
-          </View>
-        </View>
-      )}
+      {/* --- Alignment frame --- */}
+      {!captured &&
+        frame(
+          '#FFFFFF',
+          mode === 'digital'
+            ? 'Fit the meter display (digits and "kWh") inside the frame. Avoid glare and hold steady.'
+            : 'Get close so the row of dials fills the frame (not the whole meter). Avoid glare on the glass and hold steady.'
+        )}
+      {captured && frame(C.volt, 'Captured photo. Reading the meter inside the box.', true)}
 
       {/* --- Big reading card on top of the frozen image --- */}
       {captured && !busy && reading != null && (
-        <View className="absolute top-14 left-4 right-4 items-center">
-          <View className="bg-emerald-500 w-full px-6 py-6 rounded-3xl items-center">
-            <Text className="text-white text-base uppercase tracking-widest text-center mb-1">
+        <View style={{ position: 'absolute', top: 56, left: 16, right: 16, alignItems: 'center' }}>
+          <View
+            style={{
+              backgroundColor: C.volt,
+              width: '100%',
+              paddingHorizontal: 24,
+              paddingVertical: 24,
+              borderRadius: 28,
+              alignItems: 'center',
+              shadowColor: C.volt,
+              shadowOpacity: 0.45,
+              shadowRadius: 18,
+              shadowOffset: { width: 0, height: 0 },
+              elevation: 8,
+            }}
+          >
+            <Txt className="text-base uppercase tracking-widest text-center mb-1" style={{ color: C.onVolt, opacity: 0.7 }}>
               Reading
-            </Text>
-            <Text
-              className="text-white font-extrabold text-center"
-              style={{ fontSize: 56 }}
+            </Txt>
+            <Txt
+              className="font-extrabold text-center"
+              style={{ fontSize: 56, color: C.onVolt }}
               adjustsFontSizeToFit
               numberOfLines={1}
               minimumFontScale={0.5}
             >
               {reading}
-            </Text>
-            <Text className="text-white text-xl font-semibold mt-1">kWh</Text>
+            </Txt>
+            <Txt className="text-xl font-semibold mt-1" style={{ color: C.onVolt }}>kWh</Txt>
             {warn ? (
-              <Text className="text-yellow-100 text-center text-sm font-semibold mt-3">
+              <Txt className="text-center text-sm font-semibold mt-3" style={{ color: '#4A3A00' }}>
                 {warn}
-              </Text>
+              </Txt>
             ) : null}
           </View>
         </View>
@@ -252,13 +294,23 @@ export default function ScanScreen() {
 
       {/* --- Bottom controls --- */}
       <View
-        className="absolute bottom-0 left-0 right-0 p-5 bg-black/70"
-        style={{ paddingBottom: 50 }}
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          padding: 20,
+          paddingBottom: 50,
+          backgroundColor: 'rgba(11,13,16,0.88)',
+          borderTopLeftRadius: 28,
+          borderTopRightRadius: 28,
+          borderTopWidth: 1,
+          borderColor: C.line,
+        }}
       >
         <ErrorBanner message={error} />
 
         {captured ? (
-          // Frozen image: Retake, then Use reading (or Read again after an error)
           <View className="flex-row">
             <View className="flex-1 mr-3">
               <Button label="Retake" variant="ghost" onPress={retake} />
@@ -272,7 +324,6 @@ export default function ScanScreen() {
             </View>
           </View>
         ) : (
-          // Live camera: Cancel or Capture
           <View className="flex-row">
             <View className="flex-1 mr-3">
               <Button label="Cancel" variant="ghost" onPress={() => nav.goBack()} />
@@ -290,8 +341,8 @@ export default function ScanScreen() {
 
         {busy ? (
           <View className="items-center mt-3">
-            <ActivityIndicator color="#fff" />
-            <Text className="text-white text-xs mt-2">Reading the meter…</Text>
+            <ActivityIndicator color={C.volt} />
+            <Txt tone="muted" className="text-xs mt-2">Reading the meter…</Txt>
           </View>
         ) : null}
       </View>

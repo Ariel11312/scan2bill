@@ -1,11 +1,13 @@
 import React, { useCallback, useState } from 'react';
-import { ScrollView, Text, TextInput, View } from 'react-native';
+import { ScrollView } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { getProfile, saveRate } from '../lib/api';
 import { supabase } from '../lib/supabase';
 import { Button, ErrorBanner } from '../components/ui';
+import { Screen } from '../components/Background';
+import { Field } from '../components/Field';
+import { Card, Divider, ScreenHeader, Txt } from '../components/Dark';
 
 export default function SettingsScreen() {
   const nav = useNavigation<any>();
@@ -37,31 +39,45 @@ export default function SettingsScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-paper" edges={['top']}>
-      <ScrollView contentContainerClassName="p-5" keyboardShouldPersistTaps="handled">
-        <Text className="text-2xl font-bold text-ink mb-5">Settings</Text>
+    <Screen edges={['top']}>
+      <ScrollView
+        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHeader icon="settings-outline" title="Settings" subtitle="Rate and account" />
 
-        <Text className="text-xs text-muted mb-1">Electricity rate per kWh</Text>
-        <TextInput
-          className="h-14 bg-panel border border-line rounded-xl px-4 text-ink text-lg mb-3"
-          keyboardType="decimal-pad" placeholder="e.g. 12.50" value={rate} onChangeText={setRate}
-        />
-        <Text className="text-xs text-muted mb-1">Currency code</Text>
-        <TextInput
-          className="h-14 bg-panel border border-line rounded-xl px-4 text-ink text-lg mb-4"
-          autoCapitalize="characters" maxLength={3} value={currency} onChangeText={setCurrency}
-        />
-        <ErrorBanner message={error} />
-        {msg ? <Text className="text-volt mb-3">{msg}</Text> : null}
-        <Button label="Save rate" onPress={save} loading={saving} />
-        <Text className="text-xs text-muted mt-3">Past readings keep the rate they were saved with.</Text>
+        <Card>
+          <Field
+            label="Electricity rate per kWh"
+            icon="flash-outline"
+            placeholder="e.g. 12.50"
+            keyboardType="decimal-pad"
+            value={rate}
+            onChangeText={setRate}
+          />
+          <Field
+            label="Currency code"
+            icon="cash-outline"
+            placeholder="PHP"
+            autoCapitalize="characters"
+            maxLength={3}
+            value={currency}
+            onChangeText={setCurrency}
+          />
+          <ErrorBanner message={error} />
+          {msg ? <Txt tone="volt" className="mb-3">{msg}</Txt> : null}
+          <Button label="Save rate" onPress={save} loading={saving} />
+          <Txt tone="muted" className="text-xs mt-3">Past readings keep the rate they were saved with.</Txt>
+        </Card>
 
-        <View className="h-px bg-line my-8" />
-
-        <Button label="Enter a reading manually" variant="ghost" onPress={() => nav.navigate('Confirm', {})} />
-        <Text className="text-muted text-sm mt-6 mb-3">Signed in as {session?.user.email}</Text>
-        <Button label="Sign out" variant="danger" onPress={() => supabase.auth.signOut()} />
+        <Card style={{ marginTop: 16 }}>
+          <Button label="Enter a reading manually" variant="ghost" onPress={() => nav.navigate('Confirm', {})} />
+          <Divider />
+          <Txt tone="muted" className="text-sm mb-3">Signed in as {session?.user.email}</Txt>
+          <Button label="Sign out" variant="danger" onPress={() => supabase.auth.signOut()} />
+        </Card>
       </ScrollView>
-    </SafeAreaView>
+    </Screen>
   );
 }

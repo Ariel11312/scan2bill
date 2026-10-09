@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { getLastReading, getProfile, insertReading, Profile } from '../lib/api';
 import { money, validateAndCompute } from '../lib/calc';
-import { Button, ErrorBanner, Stat } from '../components/ui';
+import { Button, ErrorBanner } from '../components/ui';
+import { Screen } from '../components/Background';
+import { Field } from '../components/Field';
+import { Card, Divider, ScreenHeader, StatBlock, Txt } from '../components/Dark';
+import { C } from '../lib/theme';
 
 type Params = { value?: number; raw?: string };
 
@@ -86,61 +89,87 @@ export default function ConfirmScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-paper">
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} className="flex-1">
-        <ScrollView contentContainerClassName="p-5" keyboardShouldPersistTaps="handled">
-          <Text className="text-2xl font-bold text-ink">{scanned != null ? 'Confirm reading' : 'Enter reading'}</Text>
-          <Text className="text-muted mt-1 mb-5">
-            {scanned != null ? 'Compare this to your meter and correct any digit that is wrong.' : 'Type the number shown on your meter.'}
-          </Text>
+    <Screen>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView
+          contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <ScreenHeader
+            icon="checkmark-done-outline"
+            title={scanned != null ? 'Confirm reading' : 'Enter reading'}
+            subtitle={
+              scanned != null
+                ? 'Compare this to your meter and fix any wrong digit.'
+                : 'Type the number shown on your meter.'
+            }
+          />
 
           {loadError ? (
-            <View className="mb-5">
+            <View style={{ marginBottom: 20 }}>
               <ErrorBanner message={loadError} />
-              <View className="mt-2"><Button label="Retry" variant="ghost" onPress={() => setReloadKey((k) => k + 1)} /></View>
+              <View style={{ marginTop: 8 }}>
+                <Button label="Retry" variant="ghost" onPress={() => setReloadKey((k) => k + 1)} />
+              </View>
             </View>
           ) : null}
 
-          <Text className="text-xs text-muted mb-1">Meter reading (kWh)</Text>
-          <TextInput
-            className="h-16 bg-panel border border-line rounded-xl px-4 text-3xl font-bold text-ink"
-            keyboardType="decimal-pad" value={text} onChangeText={onChange} autoFocus={scanned == null}
+          <Field
+            big
+            label="Meter reading (kWh)"
+            icon="speedometer-outline"
+            placeholder="0000.0"
+            keyboardType="decimal-pad"
+            value={text}
+            onChangeText={onChange}
+            autoFocus={scanned == null}
           />
 
-          <View className="mt-5">
+          <View style={{ marginBottom: 4 }}>
             {result && !result.ok ? <ErrorBanner message={result.error} /> : null}
             {result?.ok && result.rolledOver ? (
-              <Text className="text-muted text-sm mb-3">The meter appears to have rolled over past its maximum. Consumption accounts for that.</Text>
+              <Txt tone="muted" className="text-sm mb-3">
+                The meter appears to have rolled over past its maximum. Consumption accounts for that.
+              </Txt>
             ) : null}
             {previous === null && ready ? (
-              <Text className="text-muted text-sm mb-3">This is your first reading. It becomes the baseline, so consumption is 0 kWh.</Text>
+              <Txt tone="muted" className="text-sm mb-3">
+                This is your first reading. It becomes the baseline, so consumption is 0 kWh.
+              </Txt>
             ) : null}
           </View>
 
-          <View className="bg-panel border border-line rounded-2xl p-5">
+          <Card>
             <View className="flex-row">
-              <Stat label="Previous" value={previous != null ? previous.toFixed(1) : '—'} />
-              <Stat label="Current" value={validNumber ? current.toFixed(1) : '—'} />
+              <StatBlock label="Previous" value={previous != null ? previous.toFixed(1) : '—'} />
+              <StatBlock label="Current" value={validNumber ? current.toFixed(1) : '—'} />
             </View>
-            <View className="h-px bg-line my-4" />
+            <Divider />
             <View className="flex-row">
-              <Stat label="Consumption" value={result?.ok ? `${result.consumption} kWh` : '—'} />
-              <Stat label="Rate" value={profile ? `${money(profile.rate_per_kwh, cur)}/kWh` : '—'} />
+              <StatBlock label="Consumption" value={result?.ok ? `${result.consumption} kWh` : '—'} />
+              <StatBlock label="Rate" value={profile ? `${money(profile.rate_per_kwh, cur)}/kWh` : '—'} />
             </View>
-            <View className="h-px bg-line my-4" />
-            <Text className="text-xs text-muted">Estimated bill</Text>
-            <Text className="text-4xl font-bold text-ink mt-1">{result?.ok ? money(result.bill, cur) : '—'}</Text>
-          </View>
+            <Divider />
+            <Txt tone="muted" className="text-xs uppercase tracking-widest">Estimated bill</Txt>
+            <Txt className="text-4xl font-extrabold mt-1" style={result?.ok ? { color: C.volt } : undefined}>
+              {result?.ok ? money(result.bill, cur) : '—'}
+            </Txt>
+          </Card>
 
-          <View className="mt-5"><ErrorBanner message={saveError} /></View>
-          <View className="mt-1">
+          <View style={{ marginTop: 20 }}><ErrorBanner message={saveError} /></View>
+          <View style={{ marginTop: 4 }}>
             <Button label="Save reading" onPress={save} loading={saving} disabled={!result?.ok || saving} />
           </View>
-          <View className="mt-3">
-            <Button label={scanned != null ? 'Retake scan' : 'Cancel'} variant="ghost" onPress={() => (scanned != null ? nav.replace('Scan') : nav.goBack())} />
+          <View style={{ marginTop: 12 }}>
+            <Button
+              label={scanned != null ? 'Retake scan' : 'Cancel'}
+              variant="ghost"
+              onPress={() => (scanned != null ? nav.replace('Scan') : nav.goBack())}
+            />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </Screen>
   );
 }
